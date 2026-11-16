@@ -102,3 +102,23 @@ def list_snapshots(vmid, node="pve"):
         for snapshot in snapshots
         if snapshot["name"] != "current"
     ]
+
+def verify_baseline(vmid, baseline_name="baseline-clean", node="pve"):
+    """Verify that an approved baseline snapshot exists."""
+    snapshots = list_snapshots(vmid, node)
+
+    for snapshot in snapshots:
+        if snapshot["name"] == baseline_name:
+            return {
+                "vmid": vmid,
+                "baseline": baseline_name,
+                "status": "READY",
+                "exists": True
+            }
+
+    return {
+        "vmid": vmid,
+        "baseline": baseline_name,
+        "status": "MISSING_BASELINE",
+        "exists": False
+    }

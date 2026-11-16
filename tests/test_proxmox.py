@@ -79,5 +79,35 @@ class ProxmoxTests(unittest.TestCase):
         self.assertEqual(result[0]["name"], "baseline-clean")
 
 
+    def test_verify_baseline_exists(self):
+        from unittest.mock import patch
+        from rvpi_automation.proxmox import verify_baseline
+
+        with patch(
+            "rvpi_automation.proxmox.list_snapshots",
+            return_value=[
+                {"name": "baseline-clean", "description": "Clean VM"}
+            ]
+        ):
+            result = verify_baseline(100)
+
+        self.assertEqual(result["status"], "READY")
+        self.assertTrue(result["exists"])
+
+
+    def test_verify_baseline_missing(self):
+        from unittest.mock import patch
+        from rvpi_automation.proxmox import verify_baseline
+
+        with patch(
+            "rvpi_automation.proxmox.list_snapshots",
+            return_value=[]
+        ):
+            result = verify_baseline(100)
+
+        self.assertEqual(result["status"], "MISSING_BASELINE")
+        self.assertFalse(result["exists"])
+
+
 if __name__ == "__main__":
     unittest.main()
