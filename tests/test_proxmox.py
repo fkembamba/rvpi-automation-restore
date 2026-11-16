@@ -39,6 +39,45 @@ class ProxmoxTests(unittest.TestCase):
                     "TEST-SECRET-123"
                 )
 
+    def test_list_snapshots_excludes_current(self):
+        import json
+        from unittest.mock import patch, MagicMock
+        from rvpi_automation.proxmox import list_snapshots
+
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value = mock_response
+
+        payload = {
+            "data": [
+                {"name": "current"},
+                {
+                    "name": "baseline-clean",
+                    "description": "Clean VM baseline",
+                    "snaptime": 1790000000
+                }
+            ]
+        }
+
+        with patch.dict("os.environ", {
+            "PVE_URL": "https://pve.aicyber.rw:8006",
+            "PVE_TOKEN_ID": "automation@pve!readonly",
+            "PVE_TOKEN_SECRET": "TEST-ONLY-SECRET",
+            "PVE_CA_CERT": "test-ca.pem"
+        }):
+            with patch("rvpi_automation.proxmox.ssl.create_default_context"):
+                with patch(
+                    "rvpi_automation.proxmox.urlopen",
+                    return_value=mock_response
+                ):
+                    with patch(
+                        "rvpi_automation.proxmox.json.load",
+                        return_value=payload
+                    ):
+                        result = list_snapshots(100)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["name"], "baseline-clean")
+
 
 if __name__ == "__main__":
     unittest.main()

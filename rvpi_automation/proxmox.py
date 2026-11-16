@@ -57,3 +57,48 @@ def list_vms():
     with urlopen(request, context=context, timeout=10) as response:
         payload = json.load(response)
     return normalize_vm_inventory(payload)
+
+def list_snapshots(vmid, node="pve"):
+    """List existing Proxmox VM snapshots (read-only)."""
+    base_url = os.environ.get("PVE_URL", "").rstrip("/")
+    token_id = os.environ.get("PVE_TOKEN_ID", "")
+
+    if not base_url.startswith("https://"):
+        raise ValueError("Set a valid HTTPS PVE_URL")
+    if not token_id:
+        raise ValueError("Set PVE_TOKEN_ID")
+    if not isinstance(vmid, int) or isinstance(vmid, bool) or vmid <= 0:
+        raise ValueError("VM ID must be a positive integer")
+    if node != "pve":
+        raise ValueError("Node is not approved")
+
+    token_secret = load_token_secret()
+
+    context = ssl.create_default_context(
+        cafile=os.environ["PVE_CA_CERT"]
+    )
+
+    url = f"{base_url}/api2/json/nodes/{node}/qemu/{vmid}/snapshot"
+
+    request = Request(
+        url,
+        headers={
+            "Authorization": f"PVEAPIToken={token_id}={token_secret}"
+        },
+        method="GET"
+    )
+
+    with urlopen(request, context=context, timeout=10) as response:
+        payload = json.load(response)
+
+    snapshots = payload["data"]
+
+    return [
+        {
+            "name": snapshot["name"],
+            "description": snapshot.get("description", ""),
+            "timestamp": snapshot.get("snaptime")
+        }
+        for snapshot in snapshots
+        if snapshot["name"] != "current"
+    ]
