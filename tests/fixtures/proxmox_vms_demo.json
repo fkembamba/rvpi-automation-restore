@@ -1,0 +1,6 @@
+{
+  "data": [
+    {"vmid": 9002, "name": "DEMO-workstation", "status": "stopped", "node": "pve-demo"},
+    {"vmid": 9001, "name": "DEMO-web-server", "status": "running", "node": "pve-demo"}
+  ]
+}
