@@ -6,11 +6,15 @@ from pathlib import Path
 
 from rvpi_automation.inventory import normalize_vm_inventory
 from rvpi_automation.proxmox import list_vms
+from rvpi_automation.restore_token import check_restore_token
 
 
 def main():
     parser = argparse.ArgumentParser(description="RVPI Automation / Restore (read-only v0.2)")
-    parser.add_argument("command", choices=["health", "list-vms", "demo-inventory"])
+    parser.add_argument(
+    "command",
+    choices=["health", "list-vms", "demo-inventory", "check-restore-token"]
+    )
     args = parser.parse_args()
 
     if args.command == "health":
@@ -27,12 +31,20 @@ def main():
             "source": "SIMULATED — NOT LIVE PROXMOX DATA",
             "vms": vms,
         }, indent=2))
+    
     elif args.command == "list-vms":
         try:
             print(json.dumps(list_vms(), indent=2))
         except (ValueError, OSError, KeyError, json.JSONDecodeError) as exc:
             parser.exit(1, f"Read-only inventory failed: {exc}\n")
 
+    elif args.command == "check-restore-token":
+        try:
+            print(json.dumps(check_restore_token(), indent=2))
+        except (ValueError, OSError, KeyError, json.JSONDecodeError) as exc:
+            parser.exit(1, f"Restoration token check failed: {exc}\n")
+
 
 if __name__ == "__main__":
     main()
+
