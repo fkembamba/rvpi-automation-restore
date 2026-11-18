@@ -86,13 +86,16 @@ class RestoreExecutionTests(unittest.TestCase):
         )
         self.mock_baseline.assert_not_called()
 
+    
     def test_unapproved_vm_rejected(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(PermissionError):
             execution.plan_restore_execution(100)
 
         self.mock_inventory.assert_not_called()
         self.mock_baseline.assert_not_called()
 
+
+    
     def test_wrong_node_blocked(self):
         result = execution.plan_restore_execution(
             130,
@@ -101,9 +104,11 @@ class RestoreExecutionTests(unittest.TestCase):
 
         self.assertEqual(
             result["status"],
-            "BLOCKED_VM_NOT_FOUND",
+            "BLOCKED_NODE_MISMATCH",
         )
+        self.mock_inventory.assert_not_called()
         self.mock_baseline.assert_not_called()
+
 
 
 if __name__ == "__main__":

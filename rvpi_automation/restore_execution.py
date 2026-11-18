@@ -1,30 +1,34 @@
 
-"""Read-only preflight checks for controlled RVPI restoration."""
+"""Read-only preflight checks for approved RVPI restoration targets."""
 
 from rvpi_automation.proxmox import list_vms, verify_baseline
+from rvpi_automation.restore_policy import get_restore_target
 
 
-TEST_VMID = 130
-BASELINE_NAME = "baseline-clean"
+def plan_restore_execution(vmid=130, node=None):
+    """Validate an approved VM for restoration without modifying it."""
 
+    # Retrieve approved settings from the centralized policy.
+    target = get_restore_target(vmid)
 
-def plan_restore_execution(vmid=TEST_VMID, node="pve"):
-    """Plan a snapshot restoration without changing VM state."""
-
-    if type(vmid) is not int or vmid != TEST_VMID:
-        raise ValueError("Only disposable VM 130 is approved")
+    approved_node = target["node"]
+    baseline_name = target["baseline"]
 
     plan = {
         "vmid": vmid,
-        "node": node,
-        "baseline": BASELINE_NAME,
+        "node": approved_node,
+        "baseline": baseline_name,
         "changes_applied": False,
         "execution_authorized": False,
     }
 
+    # Reject requests targeting an unapproved Proxmox node.
+    if node is not None and node != approved_node:
+        return {**plan, "status": "BLOCKED_NODE_MISMATCH"}
+
     inventory = [
         vm for vm in list_vms()
-        if vm["vmid"] == vmid and vm["node"] == node
+        if vm["vmid"] == vmid and vm["node"] == approved_node
     ]
 
     if len(inventory) != 1:
@@ -32,8 +36,8 @@ def plan_restore_execution(vmid=TEST_VMID, node="pve"):
 
     baseline = verify_baseline(
         vmid,
-        baseline_name=BASELINE_NAME,
-        node=node,
+        baseline_name=baseline_name,
+        node=approved_node,
     )
 
     if not baseline["exists"]:
