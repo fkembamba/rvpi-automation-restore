@@ -28,6 +28,10 @@ from rvpi_automation.restore_task_api import (
     read_restore_task_status,
     read_vm_power_task_status,
 )
+from rvpi_automation.snapshot_management import (
+    create_snapshot,
+    list_approved_snapshots,
+)
 from rvpi_automation.restore_token import CA_CERT, PVE_URL, check_restore_token, get_restore_credential
 from rvpi_automation.restore_verification import verify_restoration
 
@@ -260,8 +264,22 @@ def restore_test(vmid, *, execute=False, confirmation=None, max_checks=60, inter
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="RVPI policy-scoped Proxmox VM automation")
-    parser.add_argument("command", choices=["list-targets", "status", "start", "shutdown", "verify", "restore-test"])
+    parser.add_argument(
+        "command",
+        choices=[
+            "list-targets",
+            "status",
+            "start",
+            "shutdown",
+            "verify",
+            "restore-test",
+            "snapshot-list",
+            "snapshot-create",
+        ],
+    )
     parser.add_argument("--vmid", type=int, help="Approved VM ID")
+    parser.add_argument("--name", help="Name for a new snapshot")
+    parser.add_argument("--description", default="", help="Optional snapshot description")
     parser.add_argument("--execute", action="store_true", help="Allow real VM changes")
     parser.add_argument("--confirm", help="Required confirmation for real operations")
     parser.add_argument("--max-checks", type=int, default=60)
@@ -282,6 +300,20 @@ def main(argv=None):
             result = check_restore_token(args.vmid, target["node"], target.get("power_credential_profile") or target["credential_profile"])
         elif args.command == "verify":
             result = verify_restoration(args.vmid)
+        elif args.command == "snapshot-list":
+            result = list_approved_snapshots(args.vmid)
+        elif args.command == "snapshot-create":
+            if not args.name:
+                parser.error("snapshot-create requires --name")
+            result = create_snapshot(
+                args.vmid,
+                args.name,
+                description=args.description,
+                execute=args.execute,
+                confirmation=args.confirm,
+                max_checks=args.max_checks,
+                interval=args.interval,
+            )
         elif args.command in ("start", "shutdown"):
             result = submit_vm_power(args.vmid, args.command, args.confirm, execute=args.execute)
         else:
