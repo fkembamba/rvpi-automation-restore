@@ -148,7 +148,7 @@ class RestoreBatchExecutionTests(unittest.TestCase):
         self.assertEqual(self.submit.call_count, 1)
         self.assertEqual(self.monitor.call_count, 2)
 
-    
+
     def test_submission_error_reports_uncertainty(self):
         self.submit.side_effect = RuntimeError(
             "Simulated ambiguous submission error"
@@ -165,6 +165,273 @@ class RestoreBatchExecutionTests(unittest.TestCase):
         self.assertTrue(result["submission_outcome_uncertain"])
         self.assertEqual(self.submit.call_count, 1)
         self.monitor.assert_not_called()
+
+
+
+    def test_completed_batch_guest_verification(self):
+        report = {
+            "results": [{
+                "vmid": 130,
+                "task_id": "MOCK-TASK-130",
+                "status": "TASK_SUCCEEDED",
+            }]
+        }
+
+        with patch.object(
+            executor, "read_restore_task_status",
+            return_value={
+                "task_status": "TASK_SUCCEEDED",
+                "exitstatus": "OK",
+            },
+        ), patch.object(
+            executor, "verify_restoration",
+            return_value={
+                "verification_status": "PASS",
+                "baseline": "baseline-clean",
+                "hostname_sha256_match": True,
+                "post_snapshot_marker_absent": True,
+                "differences": [],
+            },
+        ):
+            result = executor.verify_completed_restore_batch(report)
+
+        self.assertTrue(result["all_verified"])
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertEqual(
+            result["results"][0]["status"],
+            "RESTORATION_VERIFIED",
+        )
+
+    def test_guest_verification_failure(self):
+        report = {
+            "results": [{
+                "vmid": 130,
+                "task_id": "MOCK-TASK-130",
+                "status": "TASK_SUCCEEDED",
+            }]
+        }
+
+        with patch.object(
+            executor, "read_restore_task_status",
+            return_value={
+                "task_status": "TASK_SUCCEEDED",
+                "exitstatus": "OK",
+            },
+        ), patch.object(
+            executor, "verify_restoration",
+            side_effect=TimeoutError("Guest unreachable"),
+        ):
+            result = executor.verify_completed_restore_batch(report)
+
+        self.assertFalse(result["all_verified"])
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertEqual(
+            result["results"][0]["status"],
+            "VERIFICATION_UNAVAILABLE",
+        )
+
+
+    def test_restoration_evidence_saved(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        report = {
+            "status": "VERIFIED",
+            "results": [{
+                "vmid": 130,
+                "status": "RESTORATION_VERIFIED",
+            }],
+        }
+
+        with tempfile.TemporaryDirectory() as folder:
+            filename = executor.save_restore_report(
+                report,
+                evidence_dir=folder,
+            )
+
+            saved = json.loads(
+                Path(filename).read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(saved["report"], report)
+            self.assertIn("recorded_at_utc", saved)
+            self.assertTrue(Path(filename).is_file())
+
+
+
+class PowerLifecycleTests(unittest.TestCase):
+
+    def test_dry_run_requires_power_profile(self):
+        with patch.object(
+            executor.urllib.request, "urlopen"
+        ) as mock_api:
+            result = executor.submit_vm_power(130, "start")
+
+        self.assertEqual(
+            result["status"], "BLOCKED_NO_POWER_PROFILE"
+        )
+        self.assertFalse(result["changes_applied"])
+        mock_api.assert_not_called()
+
+    def test_real_action_blocked_without_credential(self):
+        with patch.object(
+            executor.urllib.request, "urlopen"
+        ) as mock_api:
+            with self.assertRaises(PermissionError):
+                executor.submit_vm_power(
+                    130, "start",
+                    "POWER-START-130",
+                    execute=True,
+                )
+
+        mock_api.assert_not_called()
+
+    def test_forced_stop_rejected(self):
+        with self.assertRaises(ValueError):
+            executor.submit_vm_power(130, "stop")
+
+    def test_wrong_confirmation_rejected(self):
+        fake_target = {
+            "node": "pve",
+            "baseline": "baseline-clean",
+            "credential_profile": "rollback130",
+            "power_credential_profile": "power130",
+        }
+
+        with patch.object(
+            executor, "get_restore_target",
+            return_value=fake_target,
+        ), patch.object(
+            executor.urllib.request, "urlopen"
+        ) as mock_api:
+            with self.assertRaises(PermissionError):
+                executor.submit_vm_power(
+                    130, "start",
+                    "INCORRECT",
+                    execute=True,
+                )
+
+        mock_api.assert_not_called()
+
+
+
+    def test_start_and_shutdown_submission(self):
+        import io
+        import json
+        import tempfile
+        from pathlib import Path
+
+        target = {
+            "node": "pve",
+            "baseline": "baseline-clean",
+            "credential_profile": "rollback130",
+            "power_credential_profile": "power130",
+        }
+
+        with tempfile.TemporaryDirectory() as folder:
+            token_file = Path(folder) / "power-token.json"
+            token_file.write_text(
+                json.dumps({
+                    "full-tokenid": "test@pve!power130",
+                    "value": "fake-test-secret",
+                }),
+                encoding="utf-8",
+            )
+
+            def credential(profile, vmid, node):
+                self.assertEqual(vmid, 130)
+                self.assertEqual(node, "pve")
+                return {
+                    "token_id": (
+                        "test@pve!power130"
+                        if profile == "power130"
+                        else "test@pve!rollback130"
+                    ),
+                    "token_file": token_file,
+                }
+
+            for action, state in (
+                ("start", "stopped"),
+                ("shutdown", "running"),
+            ):
+                with self.subTest(action=action):
+                    with patch.object(
+                        executor, "get_restore_target",
+                        return_value=target,
+                    ), patch.object(
+                        executor, "get_restore_credential",
+                        side_effect=credential,
+                    ), patch.object(
+                        executor, "check_restore_token",
+                        return_value={
+                            "vmid": 130,
+                            "vm_status": state,
+                        },
+                    ), patch.object(
+                        executor.ssl, "create_default_context",
+                    ), patch.object(
+                        executor.urllib.request, "urlopen",
+                        return_value=io.BytesIO(
+                            b'{"data":"UPID:pve:mock-power-task"}'
+                        ),
+                    ) as mock_api:
+
+                        result = executor.submit_vm_power(
+                            130,
+                            action,
+                            f"POWER-{action.upper()}-130",
+                            execute=True,
+                        )
+
+                        self.assertEqual(
+                            result["status"],
+                            "SUBMITTED_UNVERIFIED",
+                        )
+                        self.assertFalse(result["guest_ready"])
+                        mock_api.assert_called_once()
+
+                        request = mock_api.call_args.args[0]
+                        self.assertEqual(
+                            request.get_method(), "POST"
+                        )
+                        self.assertIn(
+                            f"/qemu/130/status/{action}",
+                            request.full_url,
+                        )
+
+    def test_same_token_cannot_manage_power(self):
+        target = {
+            "node": "pve",
+            "credential_profile": "rollback130",
+            "power_credential_profile": "power130",
+        }
+
+        with patch.object(
+            executor, "get_restore_target",
+            return_value=target,
+        ), patch.object(
+            executor, "get_restore_credential",
+            return_value={
+                "token_id": "same-token",
+            },
+        ), patch.object(
+            executor.urllib.request, "urlopen",
+        ) as mock_api:
+
+            with self.assertRaises(PermissionError):
+                executor.submit_vm_power(
+                    130,
+                    "start",
+                    "POWER-START-130",
+                    execute=True,
+                )
+
+            mock_api.assert_not_called()
+
+
+
+
 
 
 

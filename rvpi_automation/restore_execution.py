@@ -5,6 +5,7 @@ from rvpi_automation.proxmox import list_vms, verify_baseline
 from rvpi_automation.restore_policy import get_restore_target
 
 
+
 def plan_restore_execution(vmid=130, node=None):
     """Validate an approved VM for restoration without modifying it."""
 

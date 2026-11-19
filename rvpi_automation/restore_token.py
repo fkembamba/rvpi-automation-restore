@@ -51,11 +51,7 @@ def get_restore_credential(profile, vmid, node):
 
 
 
-def check_restore_token(
-    vmid=TEST_VMID,
-    node="pve",
-    credential_profile="rollback130",
-):
+def check_restore_token(vmid, node, credential_profile):
     """Check the VM using the currently configured execution token."""
 
     # # This credential is currently authorized for VM 130 only.

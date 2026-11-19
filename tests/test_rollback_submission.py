@@ -78,7 +78,7 @@ class RollbackSubmissionTests(unittest.TestCase):
     def test_unapproved_vm_rejected(self):
         with self.assertRaises(PermissionError):
             executor.submit_restore(
-                100, executor.CONFIRMATION
+                100, "ROLLBACK-130-baseline-clean"
             )
 
         self.mock_plan.assert_not_called()
@@ -100,7 +100,7 @@ class RollbackSubmissionTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             executor.submit_restore(
-                130, executor.CONFIRMATION
+                130, "ROLLBACK-130-baseline-clean"
             )
 
         self.mock_urlopen.assert_not_called()
@@ -112,14 +112,14 @@ class RollbackSubmissionTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             executor.submit_restore(
-                130, executor.CONFIRMATION
+                130, "ROLLBACK-130-baseline-clean"
             )
 
         self.mock_urlopen.assert_not_called()
 
     def test_authorized_request_is_submitted(self):
         result = executor.submit_restore(
-            130, executor.CONFIRMATION
+            130, "ROLLBACK-130-baseline-clean"
         )
 
         self.assertEqual(

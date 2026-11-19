@@ -1,5 +1,5 @@
 
-"""Read-only retrieval of Proxmox restoration task status."""
+"""Read-only Proxmox task monitoring for approved RVPI VMs."""
 
 import json
 import ssl
@@ -17,35 +17,52 @@ from rvpi_automation.restore_token import (
 from rvpi_automation.task_monitor import interpret_task_status
 
 
-def read_restore_task_status(upid, vmid=130):
-    """Read the status of an authorized rollback task without modifying a VM."""
+POWER_TASK_TYPES = {
+    "start": "qmstart",
+    "shutdown": "qmshutdown",
+}
 
-    # # Current execution credential is restricted to VM 130.
-    # if type(vmid) is not int or vmid != 130:
-    #     raise PermissionError("Task-monitoring credential is restricted to VM 130")
 
+def _read_vm_task_status(
+    upid,
+    vmid,
+    expected_type,
+    credential_field,
+):
+    """Read an authorized task and verify its identity."""
+
+    # 1. Check VM authorization.
     target = get_restore_target(vmid)
     node = target["node"]
 
-    credential = get_restore_credential(
-        target["credential_profile"],
-        vmid,
-        node,
-    )
+    profile = target.get(credential_field)
 
-    # Ensure the task belongs to the approved node and VM.
+    if not isinstance(profile, str) or not profile:
+        raise PermissionError(
+            f"No {credential_field} configured for VM {vmid}"
+        )
+
+    # 2. Check task identity before contacting Proxmox.
     parts = upid.split(":") if isinstance(upid, str) else []
 
     if (
         len(parts) < 8
         or parts[0] != "UPID"
         or parts[1] != node
-        or parts[5] != "qmrollback"
+        or parts[5] != expected_type
         or parts[6] != str(vmid)
     ):
-        raise ValueError("Invalid or unauthorized rollback task ID")
+        raise ValueError(
+            "Invalid or unauthorized Proxmox task ID"
+        )
 
-    
+    # 3. Select a credential authorized for this VM.
+    credential = get_restore_credential(
+        profile,
+        vmid,
+        node,
+    )
+
     token_id = credential["token_id"]
     token_file = credential["token_file"]
 
@@ -54,13 +71,18 @@ def read_restore_task_status(upid, vmid=130):
     )
 
     if token.get("full-tokenid") != token_id:
-        raise ValueError("Unexpected restoration token identity")
-
+        raise ValueError(
+            "Unexpected task-monitoring token identity"
+        )
 
     secret = token.get("value")
-    if not isinstance(secret, str) or not secret:
-        raise ValueError("Missing restoration token secret")
 
+    if not isinstance(secret, str) or not secret:
+        raise ValueError(
+            "Missing task-monitoring token secret"
+        )
+
+    # 4. Make a read-only Proxmox API request.
     encoded_upid = urllib.parse.quote(upid, safe="")
 
     url = (
@@ -76,28 +98,72 @@ def read_restore_task_status(upid, vmid=130):
         method="GET",
     )
 
-    context = ssl.create_default_context(cafile=str(CA_CERT))
+    context = ssl.create_default_context(
+        cafile=str(CA_CERT)
+    )
 
     with urllib.request.urlopen(
-        request, context=context, timeout=30
+        request,
+        context=context,
+        timeout=30,
     ) as response:
         result = json.load(response)
 
     task = result.get("data")
-    if not isinstance(task, dict):
-        raise RuntimeError("Invalid Proxmox task-status response")
 
+    if not isinstance(task, dict):
+        raise RuntimeError(
+            "Invalid Proxmox task-status response"
+        )
+
+    # 5. Verify the identity in the API response.
     if (
         task.get("upid") != upid
-        or task.get("type") != "qmrollback"
+        or task.get("type") != expected_type
         or str(task.get("id")) != str(vmid)
         or task.get("node") != node
     ):
-        raise RuntimeError("Proxmox task identity mismatch")
+        raise RuntimeError(
+            "Proxmox task identity mismatch"
+        )
 
+    # 6. Interpret the task without changing the VM.
     return {
         "vmid": vmid,
         "node": node,
         "task_id": upid,
         **interpret_task_status(task),
+    }
+
+
+def read_restore_task_status(upid, vmid):
+    """Monitor an approved VM snapshot rollback."""
+
+    return _read_vm_task_status(
+        upid,
+        vmid,
+        expected_type="qmrollback",
+        credential_field="credential_profile",
+    )
+
+
+def read_vm_power_task_status(upid, vmid, action):
+    """Monitor an approved VM startup or graceful shutdown."""
+
+    if action not in POWER_TASK_TYPES:
+        raise ValueError(
+            "Only start and shutdown tasks are supported"
+        )
+
+    result = _read_vm_task_status(
+        upid,
+        vmid,
+        expected_type=POWER_TASK_TYPES[action],
+        credential_field="power_credential_profile",
+    )
+
+    return {
+        **result,
+        "action": action,
+        "guest_ready": False,
     }

@@ -81,7 +81,9 @@ class RestoreTokenTests(unittest.TestCase):
             b'{"data": {"status": "stopped"}}'
         )
 
-        result = restore_token.check_restore_token()
+        result = restore_token.check_restore_token(
+            130, "pve", "rollback130"
+        )
 
         self.assertTrue(result["token_authenticated"])
         self.assertEqual(result["vmid"], 130)
@@ -101,7 +103,9 @@ class RestoreTokenTests(unittest.TestCase):
         self.write_token(token_id="wrong@pve!token")
 
         with self.assertRaises(ValueError):
-            restore_token.check_restore_token()
+           restore_token.check_restore_token(
+                130, "pve", "rollback130"
+            )
 
         mock_open.assert_not_called()
 
@@ -110,7 +114,9 @@ class RestoreTokenTests(unittest.TestCase):
         self.write_token(secret="")
 
         with self.assertRaises(ValueError):
-            restore_token.check_restore_token()
+            restore_token.check_restore_token(
+                130, "pve", "rollback130"
+            )
 
         mock_open.assert_not_called()
 
@@ -119,7 +125,9 @@ class RestoreTokenTests(unittest.TestCase):
         self.token_file.unlink()
 
         with self.assertRaises(FileNotFoundError):
-            restore_token.check_restore_token()
+           restore_token.check_restore_token(
+                130, "pve", "rollback130"
+            )
 
         mock_open.assert_not_called()
 
@@ -128,7 +136,9 @@ class RestoreTokenTests(unittest.TestCase):
         self.ca_cert.unlink()
 
         with self.assertRaises(FileNotFoundError):
-            restore_token.check_restore_token()
+           restore_token.check_restore_token(
+                130, "pve", "rollback130"
+            )
 
         mock_open.assert_not_called()
 
@@ -140,7 +150,9 @@ class RestoreTokenTests(unittest.TestCase):
         )
 
         with self.assertRaises(OSError):
-            restore_token.check_restore_token()
+            restore_token.check_restore_token(
+                130, "pve", "rollback130"
+            )
 
     
     
