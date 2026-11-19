@@ -105,6 +105,15 @@ class GenericRestoreCLITests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             cli._wait_for_task(None, lambda task: None, max_checks=1, interval=0)
 
+    def test_success_requires_explicit_ok_exitstatus(self):
+        with self.assertRaises(RuntimeError):
+            cli._wait_for_task(
+                "MOCK-UPID",
+                lambda _: {"task_status": "TASK_SUCCEEDED"},
+                max_checks=1,
+                interval=0,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,7 +42,7 @@ def _wait_for_task(task_id, status_reader, *, max_checks, interval):
     for attempt in range(max_checks):
         result = status_reader(task_id)
         status = result.get("task_status")
-        if status == SUCCESS and result.get("exitstatus", "OK") == "OK":
+        if status == SUCCESS and result.get("exitstatus") == "OK":
             return result
         if status in FAILED or status == SUCCESS:
             raise RuntimeError(f"Proxmox task did not succeed: {status}")
