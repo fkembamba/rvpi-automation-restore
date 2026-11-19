@@ -21,6 +21,13 @@ POWER_TOKEN_FILE = (
     / ".config/rvpi-automation/power-exec/power130-token.json"
 )
 
+SNAPSHOT_TOKEN_ID = "rvpi-snapshot@pve!snapshot130"
+
+SNAPSHOT_TOKEN_FILE = (
+    Path.home()
+    / ".config/rvpi-automation/snapshot-exec/snapshot130-token.json"
+)
+
 CA_CERT = Path.home() / "pve-root-ca.pem"
 
 PVE_URL = "https://pve.aicyber.rw:8006"
@@ -37,6 +44,12 @@ CREDENTIAL_PROFILES = {
     "power130": {
         "token_id": POWER_TOKEN_ID,
         "token_file": POWER_TOKEN_FILE,
+        "vmid": 130,
+        "node": "pve",
+    },
+    "snapshot130": {
+        "token_id": SNAPSHOT_TOKEN_ID,
+        "token_file": SNAPSHOT_TOKEN_FILE,
         "vmid": 130,
         "node": "pve",
     },
