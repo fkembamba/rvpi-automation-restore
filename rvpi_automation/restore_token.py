@@ -18,7 +18,57 @@ PVE_URL = "https://pve.aicyber.rw:8006"
 TEST_VMID = 130
 
 
-def check_restore_token():
+CREDENTIAL_PROFILES = {
+    "rollback130": {
+        "token_id": TOKEN_ID,
+        "token_file": TOKEN_FILE,
+        "vmid": 130,
+        "node": "pve",
+    },
+}
+
+
+def get_restore_credential(profile, vmid, node):
+    """Return a credential only for its authorized VM and node."""
+
+    credential = CREDENTIAL_PROFILES.get(profile)
+
+    if (
+        credential is None
+        or type(vmid) is not int
+        or credential["vmid"] != vmid
+        or credential["node"] != node
+    ):
+        raise PermissionError(
+            f"No authorized restoration credential for VM {vmid}"
+        )
+
+    return {
+        "token_id": credential["token_id"],
+        "token_file": credential["token_file"],
+    }
+
+
+
+
+def check_restore_token(
+    vmid=TEST_VMID,
+    node="pve",
+    credential_profile="rollback130",
+):
+    """Check the VM using the currently configured execution token."""
+
+    # # This credential is currently authorized for VM 130 only.
+    # if type(vmid) is not int or vmid != TEST_VMID or node != "pve":
+    #     raise PermissionError(
+    #         "Current restoration token is restricted to VM 130 on pve"
+    #     )
+    credential = get_restore_credential(
+        credential_profile,
+        vmid,
+        node,
+    )
+
     """Check API authentication without modifying Proxmox."""
 
     if not TOKEN_FILE.is_file():
@@ -27,9 +77,11 @@ def check_restore_token():
     if not CA_CERT.is_file():
         raise FileNotFoundError("Proxmox CA certificate not found")
 
-    token = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
+    token = json.loads(
+        credential["token_file"].read_text(encoding="utf-8")
+    )
 
-    if token.get("full-tokenid") != TOKEN_ID:
+    if token.get("full-tokenid") != credential["token_id"]:
         raise ValueError("Unexpected restoration token identity")
 
     secret = token.get("value")
@@ -37,15 +89,17 @@ def check_restore_token():
     if not isinstance(secret, str) or not secret:
         raise ValueError("Restoration token secret is missing")
 
+    
     url = (
-        f"{PVE_URL}/api2/json/nodes/pve/"
-        f"qemu/{TEST_VMID}/status/current"
+        f"{PVE_URL}/api2/json/nodes/{node}/"
+        f"qemu/{vmid}/status/current"
     )
+
 
     request = urllib.request.Request(
         url,
         headers={
-            "Authorization": f"PVEAPIToken={TOKEN_ID}={secret}"
+            "Authorization": f"PVEAPIToken={credential['token_id']}={secret}"
         },
         method="GET",
     )
@@ -60,7 +114,7 @@ def check_restore_token():
         vm = json.load(response)["data"]
 
     return {
-        "vmid": TEST_VMID,
+        "vmid": vmid,
         "vm_status": vm["status"],
         "token_authenticated": True,
         "changes_applied": False,

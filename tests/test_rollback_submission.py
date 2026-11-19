@@ -34,6 +34,19 @@ class RollbackSubmissionTests(unittest.TestCase):
             patch.object(executor, "TOKEN_FILE", token_file)
         )
 
+
+        self.stack.enter_context(
+            patch.object(
+                executor,
+                "get_restore_credential",
+                return_value={
+                    "token_id": executor.TOKEN_ID,
+                    "token_file": token_file,
+                },
+            )
+        )
+
+
         self.mock_plan = self.stack.enter_context(
             patch.object(
                 executor,

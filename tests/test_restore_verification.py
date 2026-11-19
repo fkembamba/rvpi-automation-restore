@@ -19,9 +19,14 @@ class RestoreVerificationTests(unittest.TestCase):
 
         folder = Path(self.temp_dir.name)
 
+        # Create a temporary SSH key for testing.
         self.ssh_key = folder / "test-key"
-        self.ssh_key.write_text("test-key", encoding="utf-8")
+        self.ssh_key.write_text(
+            "test-key",
+            encoding="utf-8",
+        )
 
+        # Create temporary baseline checksum evidence.
         self.reference_file = folder / "reference.sha256"
         self.baseline_hash = "a" * 64
 
@@ -30,17 +35,17 @@ class RestoreVerificationTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        key_patch = patch.object(
-            verifier, "SSH_KEY", self.ssh_key
-        )
-        reference_patch = patch.object(
-            verifier, "REFERENCE_FILE", self.reference_file
+        # Override the centralized policy configuration for tests.
+        # No real SSH credentials or VM files are accessed.
+        reference_patch = patch.dict(
+            verifier.get_restore_target(130)["verification"],
+            {
+                "reference_file": str(self.reference_file),
+                "ssh_key": str(self.ssh_key),
+            },
         )
 
-        key_patch.start()
         reference_patch.start()
-
-        self.addCleanup(key_patch.stop)
         self.addCleanup(reference_patch.stop)
 
     @patch("rvpi_automation.restore_verification.subprocess.run")
@@ -63,7 +68,10 @@ class RestoreVerificationTests(unittest.TestCase):
     @patch("rvpi_automation.restore_verification.subprocess.run")
     def test_hostname_mismatch(self, mock_run):
         mock_run.return_value = SimpleNamespace(
-            stdout=f"{'b' * 64}  /etc/hostname\nMARKER_ABSENT\n"
+            stdout=(
+                f"{'b' * 64}  /etc/hostname\n"
+                "MARKER_ABSENT\n"
+            )
         )
 
         result = verifier.verify_restoration(130)
@@ -98,7 +106,7 @@ class RestoreVerificationTests(unittest.TestCase):
 
     @patch("rvpi_automation.restore_verification.subprocess.run")
     def test_unapproved_vm_rejected(self, mock_run):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(PermissionError):
             verifier.verify_restoration(100)
 
         mock_run.assert_not_called()

@@ -3,13 +3,26 @@
 
 # Only disposable VM 130 is approved initially.
 # Additional VMs require explicit approval and verified baselines.
+
+
 APPROVED_TARGETS = {
     130: {
         "node": "pve",
         "baseline": "baseline-clean",
         "purpose": "restoration-test",
+        "credential_profile": "rollback130",
+        "verification": {
+            "method": "linux-ssh",
+            "ssh_target": "kemba@10.10.70.130",
+            "ssh_key": "~/.ssh/rvpi_restore_test-ed25519",
+            "reference_file": "~/rvpi-evidence/vm130/hostname-reference.sha256",
+            "hostname_path": "/etc/hostname",
+            "marker_path": "/home/kemba/rvpi-restore-marker.txt",
+        },
     },
 }
+
+
 
 
 def get_restore_target(vmid):

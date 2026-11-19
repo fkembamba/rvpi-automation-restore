@@ -12,6 +12,7 @@ from rvpi_automation.restore_token import (
     TOKEN_FILE,
     CA_CERT,
     PVE_URL,
+    get_restore_credential,
 )
 from rvpi_automation.task_monitor import interpret_task_status
 
@@ -19,12 +20,18 @@ from rvpi_automation.task_monitor import interpret_task_status
 def read_restore_task_status(upid, vmid=130):
     """Read the status of an authorized rollback task without modifying a VM."""
 
-    # Current execution credential is restricted to VM 130.
-    if type(vmid) is not int or vmid != 130:
-        raise PermissionError("Task-monitoring credential is restricted to VM 130")
+    # # Current execution credential is restricted to VM 130.
+    # if type(vmid) is not int or vmid != 130:
+    #     raise PermissionError("Task-monitoring credential is restricted to VM 130")
 
     target = get_restore_target(vmid)
     node = target["node"]
+
+    credential = get_restore_credential(
+        target["credential_profile"],
+        vmid,
+        node,
+    )
 
     # Ensure the task belongs to the approved node and VM.
     parts = upid.split(":") if isinstance(upid, str) else []
@@ -38,10 +45,17 @@ def read_restore_task_status(upid, vmid=130):
     ):
         raise ValueError("Invalid or unauthorized rollback task ID")
 
-    token = json.loads(TOKEN_FILE.read_text())
+    
+    token_id = credential["token_id"]
+    token_file = credential["token_file"]
 
-    if token.get("full-tokenid") != TOKEN_ID:
+    token = json.loads(
+        token_file.read_text(encoding="utf-8")
+    )
+
+    if token.get("full-tokenid") != token_id:
         raise ValueError("Unexpected restoration token identity")
+
 
     secret = token.get("value")
     if not isinstance(secret, str) or not secret:
@@ -57,7 +71,7 @@ def read_restore_task_status(upid, vmid=130):
     request = urllib.request.Request(
         url,
         headers={
-            "Authorization": f"PVEAPIToken={TOKEN_ID}={secret}"
+            "Authorization": f"PVEAPIToken={token_id}={secret}"
         },
         method="GET",
     )

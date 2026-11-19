@@ -9,6 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from rvpi_automation import restore_token
+from rvpi_automation.restore_token import (
+    get_restore_credential as real_get_restore_credential,
+)
 
 
 class RestoreTokenTests(unittest.TestCase):
@@ -28,6 +31,20 @@ class RestoreTokenTests(unittest.TestCase):
         )
 
         self.write_token()
+
+
+        credential_patch = patch.object(
+            restore_token,
+            "get_restore_credential",
+            return_value={
+                "token_id": restore_token.TOKEN_ID,
+                "token_file": self.token_file,
+            },
+        )
+
+        credential_patch.start()
+        self.addCleanup(credential_patch.stop)
+
 
         token_patch = patch.object(
             restore_token, "TOKEN_FILE", self.token_file
@@ -124,6 +141,21 @@ class RestoreTokenTests(unittest.TestCase):
 
         with self.assertRaises(OSError):
             restore_token.check_restore_token()
+
+    
+    
+    def test_credential_rejects_wrong_target(self):
+        with self.assertRaises(PermissionError):
+            real_get_restore_credential(
+                "rollback130", 100, "pve"
+            )
+
+        with self.assertRaises(PermissionError):
+            real_get_restore_credential(
+                "rollback130", 130, "another-node"
+            )
+
+
 
 
 if __name__ == "__main__":
