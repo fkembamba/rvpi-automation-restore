@@ -49,6 +49,14 @@ class GenericRestoreCLITests(unittest.TestCase):
              ]), \
              patch.object(cli, "get_restore_credential", side_effect=lambda profile, vmid, node: {"token_id": profile}), \
              patch.object(cli, "_preflight_baseline_and_verifier"), \
+             patch.object(
+                 cli,
+                 "plan_restore_execution",
+                 return_value={
+                     "status": "DRY_RUN_READY",
+                     "vm_status": "stopped",
+                 },
+             ), \
              patch.object(cli, "submit_vm_power", side_effect=[
                  {"status": "SUBMITTED_UNVERIFIED", "task_id": "SHUTDOWN-UPID"},
                  {"status": "SUBMITTED_UNVERIFIED", "task_id": "START-UPID"},
@@ -85,6 +93,14 @@ class GenericRestoreCLITests(unittest.TestCase):
              patch.object(cli, "check_restore_token", return_value={"vm_status": "stopped"}), \
              patch.object(cli, "get_restore_credential", side_effect=lambda profile, vmid, node: {"token_id": profile}), \
              patch.object(cli, "_preflight_baseline_and_verifier"), \
+             patch.object(
+                 cli,
+                 "plan_restore_execution",
+                 return_value={
+                     "status": "DRY_RUN_READY",
+                     "vm_status": "stopped",
+                 },
+             ), \
              patch.object(cli, "submit_vm_power") as power, \
              patch.object(cli, "submit_restore", return_value={
                  "status": "SUBMITTED_UNVERIFIED", "task_id": "ROLLBACK-UPID"
@@ -113,6 +129,23 @@ class GenericRestoreCLITests(unittest.TestCase):
                 max_checks=1,
                 interval=0,
             )
+
+    def test_waits_for_restore_preflight(self):
+        with patch.object(
+            cli,
+            "plan_restore_execution",
+            side_effect=[
+                {"status": "BLOCKED_VM_NOT_STOPPED"},
+                {"status": "DRY_RUN_READY", "vm_status": "stopped"},
+            ],
+        ) as preflight, patch.object(cli.time, "sleep") as sleep:
+            result = cli._wait_for_restore_ready(
+                130, "pve", max_checks=3, interval=1
+            )
+
+        self.assertEqual(result["status"], "DRY_RUN_READY")
+        self.assertEqual(preflight.call_count, 2)
+        sleep.assert_called_once_with(1)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-
+from rvpi_automation.restore_execution import plan_restore_execution
 from rvpi_automation.restore_executor import (
     save_restore_report,
     submit_restore,
@@ -60,6 +60,30 @@ def _wait_for_state(vmid, node, profile, desired, *, max_checks, interval):
         if attempt + 1 < max_checks:
             time.sleep(interval)
     raise TimeoutError(f"VM {vmid} did not reach state {desired!r}")
+
+def _wait_for_restore_ready(vmid, node, *, max_checks, interval):
+    """Wait until the existing rollback preflight confirms readiness."""
+    for attempt in range(max_checks):
+        result = plan_restore_execution(vmid, node)
+        status = result.get("status")
+
+        if (
+            status == "DRY_RUN_READY"
+            and result.get("vm_status") == "stopped"
+        ):
+            return result
+
+        if status != "BLOCKED_VM_NOT_STOPPED":
+            raise RuntimeError(
+                f"Restoration preflight refused: {status}"
+            )
+
+        if attempt + 1 < max_checks:
+            time.sleep(interval)
+
+    raise TimeoutError(
+        f"VM {vmid} did not become ready for rollback"
+    )
 
 
 def _wait_for_guest(vmid, *, max_checks, interval):
@@ -173,7 +197,12 @@ def restore_test(vmid, *, execute=False, confirmation=None, max_checks=60, inter
             raise RuntimeError(f"VM {vmid} has unexpected status: {state!r}")
         else:
             record["steps"].append({"action": "shutdown", "status": "ALREADY_STOPPED"})
-
+        _wait_for_restore_ready(
+            vmid,
+            node,
+            max_checks=max_checks,
+            interval=interval,
+        )
         # Roll back only after Proxmox confirms stopped state.
         restore = submit_restore(vmid, f"ROLLBACK-{vmid}-{baseline}")
         record["changes_applied"] = True
