@@ -1,6 +1,12 @@
 
 """Safety tests for sequential RVPI restoration."""
 
+import io
+import json
+import tempfile
+from pathlib import Path
+
+from rvpi_automation import restore_task_api as task_api
 import unittest
 from unittest.mock import call, patch
 
@@ -262,10 +268,24 @@ class RestoreBatchExecutionTests(unittest.TestCase):
 
 class PowerLifecycleTests(unittest.TestCase):
 
+
     def test_dry_run_requires_power_profile(self):
-        with patch.object(
-            executor.urllib.request, "urlopen"
-        ) as mock_api:
+        target = {
+            "node": "pve",
+            "credential_profile": "rollback130",
+        }
+
+        with (
+            patch.object(
+                executor,
+                "get_restore_target",
+                return_value=target,
+            ),
+            patch.object(
+                executor.urllib.request,
+                "urlopen",
+            ) as mock_api,
+        ):
             result = executor.submit_vm_power(130, "start")
 
         self.assertEqual(
@@ -275,17 +295,32 @@ class PowerLifecycleTests(unittest.TestCase):
         mock_api.assert_not_called()
 
     def test_real_action_blocked_without_credential(self):
-        with patch.object(
-            executor.urllib.request, "urlopen"
-        ) as mock_api:
+        target = {
+            "node": "pve",
+            "credential_profile": "rollback130",
+        }
+
+        with (
+            patch.object(
+                executor,
+                "get_restore_target",
+                return_value=target,
+            ),
+            patch.object(
+                executor.urllib.request,
+                "urlopen",
+            ) as mock_api,
+        ):
             with self.assertRaises(PermissionError):
                 executor.submit_vm_power(
-                    130, "start",
+                    130,
+                    "start",
                     "POWER-START-130",
                     execute=True,
                 )
 
         mock_api.assert_not_called()
+
 
     def test_forced_stop_rejected(self):
         with self.assertRaises(ValueError):
@@ -428,6 +463,224 @@ class PowerLifecycleTests(unittest.TestCase):
                 )
 
             mock_api.assert_not_called()
+
+
+
+    def test_power_dry_run_blocks_missing_credential(self):
+        target = {
+            "node": "pve",
+            "credential_profile": "rollback130",
+            "power_credential_profile": "power130",
+        }
+
+        def fake_credential(profile, vmid, node):
+            return {
+                "token_id": f"test@pve!{profile}",
+                "token_file": Path("unused-test-token.json"),
+            }
+
+        with (
+            patch.object(executor, "get_restore_target", return_value=target),
+            patch.object(
+                executor,
+                "get_restore_credential",
+                side_effect=fake_credential,
+            ),
+            patch.object(Path, "is_file", return_value=False),
+            patch.object(executor.urllib.request, "urlopen") as mock_api,
+        ):
+            result = executor.submit_vm_power(130, "shutdown")
+
+        self.assertEqual(
+            result["status"], "BLOCKED_POWER_CREDENTIAL_MISSING"
+        )
+        self.assertFalse(result["changes_applied"])
+        mock_api.assert_not_called()
+
+
+    def test_power_dry_run_rejects_rollback_token_reuse(self):
+        target = {
+            "node": "pve",
+            "credential_profile": "rollback130",
+            "power_credential_profile": "power130",
+        }
+
+        credential = {
+            "token_id": "test@pve!same-token",
+            "token_file": Path("unused-test-token.json"),
+        }
+
+        with (
+            patch.object(executor, "get_restore_target", return_value=target),
+            patch.object(
+                executor,
+                "get_restore_credential",
+                return_value=credential,
+            ),
+            patch.object(executor.urllib.request, "urlopen") as mock_api,
+        ):
+            result = executor.submit_vm_power(130, "start")
+
+        self.assertEqual(
+            result["status"], "BLOCKED_REUSED_ROLLBACK_CREDENTIAL"
+        )
+        self.assertFalse(result["changes_applied"])
+        mock_api.assert_not_called()
+
+
+
+class PowerTaskMonitoringTests(unittest.TestCase):
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+
+        self.target = {
+            "node": "pve",
+            "baseline": "baseline-clean",
+            "credential_profile": "rollback130",
+            "power_credential_profile": "power130",
+        }
+
+        self.files = {}
+
+        for profile in ("rollback130", "power130"):
+            path = Path(self.temp.name) / f"{profile}.json"
+            path.write_text(
+                json.dumps({
+                    "full-tokenid": f"test@pve!{profile}",
+                    "value": "fake-secret",
+                }),
+                encoding="utf-8",
+            )
+            self.files[profile] = path
+
+        def fake_credential(profile, vmid, node):
+            self.assertEqual(vmid, 130)
+            self.assertEqual(node, "pve")
+            return {
+                "token_id": f"test@pve!{profile}",
+                "token_file": self.files[profile],
+            }
+
+        patches = [
+            patch.object(
+                task_api,
+                "get_restore_target",
+                return_value=self.target,
+            ),
+            patch.object(
+                task_api,
+                "get_restore_credential",
+                side_effect=fake_credential,
+            ),
+            patch.object(
+                task_api.ssl,
+                "create_default_context",
+            ),
+            patch.object(
+                task_api.urllib.request,
+                "urlopen",
+            ),
+        ]
+
+        self.mocks = [p.start() for p in patches]
+
+        for p in patches:
+            self.addCleanup(p.stop)
+
+        self.mock_api = self.mocks[-1]
+
+    def make_upid(self, task_type, profile):
+        return (
+            f"UPID:pve:00000001:00000002:00000003:"
+            f"{task_type}:130:test@pve!{profile}:"
+        )
+
+    def mock_response(self, upid, task_type, exitstatus="OK"):
+        self.mock_api.return_value = io.BytesIO(
+            json.dumps({
+                "data": {
+                    "upid": upid,
+                    "node": "pve",
+                    "id": "130",
+                    "type": task_type,
+                    "status": "stopped",
+                    "exitstatus": exitstatus,
+                }
+            }).encode("utf-8")
+        )
+
+    def test_start_and_shutdown_tasks(self):
+        for action, task_type in (
+            ("start", "qmstart"),
+            ("shutdown", "qmshutdown"),
+        ):
+            with self.subTest(action=action):
+                upid = self.make_upid(task_type, "power130")
+                self.mock_response(upid, task_type)
+
+                result = task_api.read_vm_power_task_status(
+                    upid, 130, action
+                )
+
+                self.assertEqual(
+                    result["task_status"], "TASK_SUCCEEDED"
+                )
+                self.assertFalse(result["guest_ready"])
+
+                request = self.mock_api.call_args.args[0]
+                self.assertEqual(request.get_method(), "GET")
+
+    def test_failed_power_task(self):
+        upid = self.make_upid("qmstart", "power130")
+        self.mock_response(
+            upid, "qmstart", "simulated startup failure"
+        )
+
+        result = task_api.read_vm_power_task_status(
+            upid, 130, "start"
+        )
+
+        self.assertEqual(
+            result["task_status"], "TASK_FAILED"
+        )
+        self.assertFalse(result["guest_ready"])
+
+    def test_rollback_monitoring_preserved(self):
+        upid = self.make_upid("qmrollback", "rollback130")
+        self.mock_response(upid, "qmrollback")
+
+        result = task_api.read_restore_task_status(
+            upid, vmid=130
+        )
+
+        self.assertEqual(
+            result["task_status"], "TASK_SUCCEEDED"
+        )
+
+    def test_unrelated_task_rejected(self):
+        upid = self.make_upid("qmrollback", "power130")
+
+        with self.assertRaises(ValueError):
+            task_api.read_vm_power_task_status(
+                upid, 130, "start"
+            )
+
+        self.mock_api.assert_not_called()
+
+    def test_missing_power_profile_rejected(self):
+        self.target.pop("power_credential_profile")
+
+        upid = self.make_upid("qmstart", "power130")
+
+        with self.assertRaises(PermissionError):
+            task_api.read_vm_power_task_status(
+                upid, 130, "start"
+            )
+
+        self.mock_api.assert_not_called()
+
 
 
 

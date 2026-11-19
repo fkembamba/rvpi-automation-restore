@@ -8,10 +8,19 @@ from pathlib import Path
 
 
 TOKEN_ID = "rvpi-restore@pve!rollback130"
+
 TOKEN_FILE = (
     Path.home()
     / ".config/rvpi-automation/restore-exec/rollback130-token.json"
 )
+
+POWER_TOKEN_ID = "rvpi-power@pve!power130"
+
+POWER_TOKEN_FILE = (
+    Path.home()
+    / ".config/rvpi-automation/power-exec/power130-token.json"
+)
+
 CA_CERT = Path.home() / "pve-root-ca.pem"
 
 PVE_URL = "https://pve.aicyber.rw:8006"
@@ -22,6 +31,12 @@ CREDENTIAL_PROFILES = {
     "rollback130": {
         "token_id": TOKEN_ID,
         "token_file": TOKEN_FILE,
+        "vmid": 130,
+        "node": "pve",
+    },
+    "power130": {
+        "token_id": POWER_TOKEN_ID,
+        "token_file": POWER_TOKEN_FILE,
         "vmid": 130,
         "node": "pve",
     },
@@ -67,8 +82,10 @@ def check_restore_token(vmid, node, credential_profile):
 
     """Check API authentication without modifying Proxmox."""
 
-    if not TOKEN_FILE.is_file():
-        raise FileNotFoundError("Restoration token file not found")
+    if not credential["token_file"].is_file():
+        raise FileNotFoundError(
+            f"Credential file not found for profile: {credential_profile}"
+        )
 
     if not CA_CERT.is_file():
         raise FileNotFoundError("Proxmox CA certificate not found")

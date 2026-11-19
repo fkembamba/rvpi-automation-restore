@@ -546,14 +546,28 @@ def submit_vm_power(vmid, action, confirmation=None, *, execute=False):
 
     # Default: perform no power operation.
     if execute is not True:
+        status = "BLOCKED_NO_POWER_PROFILE"
+
+        if power_profile:
+            credential = get_restore_credential(
+                power_profile, vmid, node
+            )
+
+            rollback_credential = get_restore_credential(
+                target["credential_profile"], vmid, node
+            )
+
+            if credential["token_id"] == rollback_credential["token_id"]:
+                status = "BLOCKED_REUSED_ROLLBACK_CREDENTIAL"
+            elif not credential["token_file"].is_file():
+                status = "BLOCKED_POWER_CREDENTIAL_MISSING"
+            else:
+                status = "DRY_RUN_CONFIGURED_UNVERIFIED"
+
         return {
             "vmid": vmid,
             "action": action,
-            "status": (
-                "DRY_RUN_READY"
-                if power_profile
-                else "BLOCKED_NO_POWER_PROFILE"
-            ),
+            "status": status,
             "changes_applied": False,
         }
 

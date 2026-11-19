@@ -11,6 +11,7 @@ APPROVED_TARGETS = {
         "baseline": "baseline-clean",
         "purpose": "restoration-test",
         "credential_profile": "rollback130",
+        "power_credential_profile": "power130",
         "verification": {
             "method": "linux-ssh",
             "ssh_target": "kemba@10.10.70.130",
