@@ -11,6 +11,7 @@ import json
 import ssl
 import sys
 import time
+import subprocess
 import urllib.request
 from pathlib import Path
 from rvpi_automation.restore_execution import plan_restore_execution
@@ -87,18 +88,33 @@ def _wait_for_restore_ready(vmid, node, *, max_checks, interval):
 
 
 def _wait_for_guest(vmid, *, max_checks, interval):
-    """Wait for guest accessibility; a definite FAIL is not automatically retried."""
+    """Retry temporary SSH unavailability, but never ignore baseline failures."""
     for attempt in range(max_checks):
         try:
             result = verify_restoration(vmid)
+
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode != 255:
+                raise
+
+            if attempt + 1 == max_checks:
+                raise
+
+            time.sleep(interval)
+            continue
+
         except (OSError, ConnectionError, TimeoutError):
             if attempt + 1 == max_checks:
                 raise
+
             time.sleep(interval)
             continue
+
         if result.get("verification_status") != "PASS":
             raise RuntimeError("Guest baseline verification failed")
+
         return result
+
     raise TimeoutError("Guest verification unavailable")
 
 

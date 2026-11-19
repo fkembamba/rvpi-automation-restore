@@ -147,6 +147,29 @@ class GenericRestoreCLITests(unittest.TestCase):
         self.assertEqual(preflight.call_count, 2)
         sleep.assert_called_once_with(1)
 
+    def test_guest_ssh_retries_until_ready(self):
+        error = cli.subprocess.CalledProcessError(
+            255, ["ssh", "kemba@10.10.70.130"]
+        )
+
+        with patch.object(
+            cli,
+            "verify_restoration",
+            side_effect=[
+                error,
+                {"verification_status": "PASS"},
+            ],
+        ) as verify, patch.object(
+            cli.time, "sleep"
+        ) as sleep:
+            result = cli._wait_for_guest(
+                130, max_checks=3, interval=1
+            )
+
+        self.assertEqual(result["verification_status"], "PASS")
+        self.assertEqual(verify.call_count, 2)
+        sleep.assert_called_once_with(1)
+
 
 if __name__ == "__main__":
     unittest.main()
