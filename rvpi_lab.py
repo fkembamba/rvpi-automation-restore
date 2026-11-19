@@ -31,6 +31,7 @@ from rvpi_automation.restore_task_api import (
 from rvpi_automation.snapshot_management import (
     create_snapshot,
     list_approved_snapshots,
+    plan_snapshot_create,
 )
 from rvpi_automation.restore_token import CA_CERT, PVE_URL, check_restore_token, get_restore_credential
 from rvpi_automation.restore_verification import verify_restoration
@@ -262,6 +263,191 @@ def restore_test(vmid, *, execute=False, confirmation=None, max_checks=60, inter
     return record
 
 
+def _wait_for_snapshot_guest(vmid, target, *, max_checks, interval):
+    """Wait for an approved Linux guest's SSH service, without baseline comparison.
+
+    A checkpoint captures the CURRENT guest state; it need not match the
+    restoration baseline. SSH strict host-key verification is retained.
+    """
+    verifier = target.get("verification", {})
+    if verifier.get("method") != "linux-ssh":
+        raise NotImplementedError(
+            "Automatic restart requires an approved guest readiness adapter"
+        )
+    key = Path(verifier["ssh_key"]).expanduser()
+    if not key.is_file():
+        raise FileNotFoundError("SSH key for guest readiness is missing")
+    destination = verifier["ssh_target"]
+    command = [
+        "ssh", "-i", str(key), "-o", "BatchMode=yes",
+        "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+        "-o", "ConnectTimeout=5", destination, "true",
+    ]
+    for attempt in range(max_checks):
+        try:
+            subprocess.run(command, check=True, capture_output=True, timeout=15)
+            return {"guest_ready": True, "verification_method": "linux-ssh"}
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            if attempt + 1 == max_checks:
+                raise RuntimeError(
+                    f"Guest of VM {vmid} not SSH-ready; snapshot was created"
+                )
+            time.sleep(interval)
+    raise TimeoutError("Guest readiness not confirmed")
+
+
+def snapshot_create_lifecycle(
+    vmid, name, *, description="", execute=False, confirmation=None,
+    max_checks=60, interval=5,
+):
+    """Orchestrate stopped-state snapshot creation and original-state recovery.
+
+    All mutations are separate policy-authorized operations. Never resubmit an
+    ambiguous snapshot request or automatically restart after a failed snapshot.
+    """
+    # The dry run intentionally contacts no Proxmox API and reads no secrets.
+    preview = plan_snapshot_create(vmid, name, description)
+    if not execute:
+        return preview
+    expected = f"CREATE-SNAPSHOT-{vmid}-{name}"
+    if confirmation != expected:
+        raise PermissionError(f"Explicit confirmation required: {expected}")
+    if type(max_checks) is not int or max_checks < 1 or interval < 0:
+        raise ValueError("Invalid monitoring bounds")
+
+    target = get_restore_target(vmid)
+    node = target["node"]
+    power_profile = target.get("power_credential_profile")
+    snapshot_profile = target.get("snapshot_credential_profile")
+    if not power_profile or not snapshot_profile:
+        raise PermissionError("Separate approved power and snapshot profiles required")
+    power_credential = get_restore_credential(power_profile, vmid, node)
+    snapshot_credential = get_restore_credential(snapshot_profile, vmid, node)
+    existing_profiles = [power_profile, snapshot_profile]
+    if target.get("credential_profile"):
+        existing_profiles.append(target["credential_profile"])
+    identities = [
+        get_restore_credential(profile, vmid, node)["token_id"]
+        for profile in existing_profiles
+    ]
+    if len(set(identities)) != len(identities):
+        raise PermissionError("Power, snapshot and rollback credentials must be independent")
+
+    # Preflight BEFORE shutdown, including read-only API credential checks,
+    # duplicate-name protection and baseline preservation.
+    power_state = check_restore_token(vmid, node, power_profile)["vm_status"]
+    snapshot_state = check_restore_token(vmid, node, snapshot_profile)["vm_status"]
+    if power_state != snapshot_state or power_state not in ("running", "stopped"):
+        raise RuntimeError("VM status readings disagree or are unsupported")
+    inventory = list_approved_snapshots(vmid)["snapshots"]
+    names = {item["name"] for item in inventory}
+    if target["baseline"] not in names:
+        raise RuntimeError("Approved baseline is missing; no changes made")
+    if name in names:
+        raise FileExistsError("Snapshot already exists; no changes made")
+    if power_state == "running":
+        verifier = target.get("verification", {})
+        if verifier.get("method") != "linux-ssh":
+            raise NotImplementedError(
+                "Automatic restart requires an approved Linux SSH verifier"
+            )
+        if not Path(verifier["ssh_key"]).expanduser().is_file():
+            raise FileNotFoundError("Guest readiness SSH key not available")
+
+    record = {
+        "vmid": vmid, "node": node, "snapshot": name,
+        "approved_baseline": target["baseline"],
+        "initial_vm_status": power_state, "status": "INCOMPLETE",
+        "changes_applied": False, "steps": [],
+        "results": [{"vmid": vmid, "status": "INCOMPLETE"}],
+    }
+    try:
+        if power_state == "running":
+            shutdown = submit_vm_power(
+                vmid, "shutdown", f"POWER-SHUTDOWN-{vmid}", execute=True
+            )
+            record["changes_applied"] = True
+            record["steps"].append({
+                "action": "shutdown", "task_id": shutdown.get("task_id"),
+                "status": shutdown.get("status"),
+            })
+            task = _wait_for_task(
+                shutdown.get("task_id"),
+                lambda upid: read_vm_power_task_status(upid, vmid, "shutdown"),
+                max_checks=max_checks, interval=interval,
+            )
+            record["steps"][-1]["completion"] = task
+        else:
+            record["steps"].append({"action": "shutdown", "status": "ALREADY_STOPPED"})
+
+        # Check status with BOTH credentials to avoid racing Proxmox's state
+        # transition: the snapshot module also independently enforces stopped.
+        _wait_for_state(
+            vmid, node, power_profile, "stopped",
+            max_checks=max_checks, interval=interval,
+        )
+        _wait_for_state(
+            vmid, node, snapshot_profile, "stopped",
+            max_checks=max_checks, interval=interval,
+        )
+
+        # Treat submission as potentially state-changing, even if the API
+        # response is ambiguous. Never automatically retry this call.
+        record["snapshot_submission_attempted"] = True
+        snapshot = create_snapshot(
+            vmid, name, description=description, execute=True,
+            confirmation=expected, max_checks=max_checks, interval=interval,
+        )
+        record["changes_applied"] = (
+            record["changes_applied"] or bool(snapshot.get("changes_applied"))
+        )
+        record["steps"].append({"action": "snapshot-create", "result": snapshot})
+        if snapshot.get("status") != "CREATED_VERIFIED":
+            raise RuntimeError("Snapshot creation was not confirmed; do not retry")
+
+        after = {item["name"] for item in list_approved_snapshots(vmid)["snapshots"]}
+        if name not in after or target["baseline"] not in after:
+            raise RuntimeError("Snapshot/baseline inventory verification failed")
+
+        if power_state == "running":
+            startup = submit_vm_power(
+                vmid, "start", f"POWER-START-{vmid}", execute=True
+            )
+            record["steps"].append({
+                "action": "start", "task_id": startup.get("task_id"),
+                "status": startup.get("status"),
+            })
+            task = _wait_for_task(
+                startup.get("task_id"),
+                lambda upid: read_vm_power_task_status(upid, vmid, "start"),
+                max_checks=max_checks, interval=interval,
+            )
+            record["steps"][-1]["completion"] = task
+            _wait_for_state(
+                vmid, node, power_profile, "running",
+                max_checks=max_checks, interval=interval,
+            )
+            record["guest_readiness"] = _wait_for_snapshot_guest(
+                vmid, target, max_checks=max_checks, interval=interval,
+            )
+        else:
+            _wait_for_state(
+                vmid, node, power_profile, "stopped",
+                max_checks=max_checks, interval=interval,
+            )
+            record["steps"].append({"action": "start", "status": "INITIALLY_STOPPED"})
+
+        record["status"] = "CREATED_VERIFIED"
+        record["results"] = [{"vmid": vmid, "status": "SNAPSHOT_CREATED_VERIFIED"}]
+    except Exception as exc:
+        # Never restart if snapshot creation is incomplete or ambiguous.
+        record["error_type"] = type(exc).__name__
+        record["error"] = str(exc)
+    finally:
+        record["evidence_file"] = save_restore_report(record)
+    return record
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="RVPI policy-scoped Proxmox VM automation")
     parser.add_argument(
@@ -305,7 +491,7 @@ def main(argv=None):
         elif args.command == "snapshot-create":
             if not args.name:
                 parser.error("snapshot-create requires --name")
-            result = create_snapshot(
+            result = snapshot_create_lifecycle(
                 args.vmid,
                 args.name,
                 description=args.description,
